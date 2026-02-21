@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Zombie Spin</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --panel: #1a1f2b;
+      --panel-2: #242c3d;
+      --text: #e6ecff;
+      --muted: #95a1c5;
+      --accent: #4be37b;
+      --danger: #ff5b6e;
+      --warning: #ffd166;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: radial-gradient(circle at top, #1b1f2e, var(--bg));
+      color: var(--text);
+    }
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 16px; }
+    h1 { margin: 0 0 12px; }
+    .layout { display: grid; grid-template-columns: 1fr 320px; gap: 16px; }
+    .panel { background: var(--panel); border: 1px solid #2c3550; border-radius: 12px; padding: 12px; }
+    .stats { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; margin-bottom: 10px; }
+    .stat { background: var(--panel-2); border-radius: 8px; padding: 8px; font-size: 13px; }
+    #grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+    .cell {
+      background: #2c3550;
+      border: 1px solid #3f4d77;
+      border-radius: 8px;
+      min-height: 85px;
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      font-size: 12px;
+    }
+    .name { font-weight: 700; font-size: 12px; line-height: 1.2; }
+    .meta { font-size: 10px; color: var(--muted); }
+    .kills { font-weight: 700; color: var(--accent); }
+    button {
+      width: 100%; padding: 10px; border: 0; border-radius: 8px;
+      background: #3d8cff; color: white; font-weight: 700; cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .log { max-height: 230px; overflow: auto; font-size: 12px; line-height: 1.4; padding-right: 6px; }
+    .chip { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; margin: 2px 4px 2px 0; background: #3b466a; }
+    .modal {
+      position: fixed; inset: 0; background: rgba(0,0,0,.7); display: none;
+      align-items: center; justify-content: center; z-index: 20;
+    }
+    .modal.show { display: flex; }
+    .modal-box { width: min(900px, 95vw); background: #151a28; border: 1px solid #3d4b77; border-radius: 14px; padding: 16px; }
+    .choices { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 10px; }
+    .card { background: #202942; border: 1px solid #42548c; border-radius: 10px; padding: 10px; }
+    .card button { margin-top: 8px; }
+    .small { font-size: 12px; color: var(--muted); }
+    .danger { color: var(--danger); }
+    @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>🧟 Zombie Spin</h1>
+    <div class="layout">
+      <div class="panel">
+        <div class="stats" id="stats"></div>
+        <div id="grid"></div>
+        <div style="margin-top:10px; display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+          <button id="spinBtn">Spin</button>
+          <button id="resetBtn" style="background:#6f7aa5;">New Run</button>
+        </div>
+      </div>
+      <div class="panel">
+        <h3 style="margin:4px 0 8px;">Protocols</h3>
+        <div id="protocols"></div>
+        <h3 style="margin:12px 0 8px;">Inventory</h3>
+        <div id="inventory"></div>
+        <h3 style="margin:12px 0 8px;">Log</h3>
+        <div class="log" id="log"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="draftModal"><div class="modal-box"><h2 id="draftTitle"></h2><div class="small" id="draftSub"></div><div class="choices" id="draftChoices"></div></div></div>
+  <div class="modal" id="raidModal"><div class="modal-box"><h2>⚠️ RAID TRIGGERED</h2><p id="raidText"></p><button id="raidStartBtn">Start 5-Spin Raid</button></div></div>
+
+<script>
+class RNG { constructor(seed=1337){ this.seed=seed>>>0; } next(){ this.seed=(1664525*this.seed+1013904223)>>>0; return this.seed/4294967296;} int(n){ return Math.floor(this.next()*n);} pick(arr){ return arr[this.int(arr.length)]; } chance(p){ return this.next()<p; }}
+class Symbol { constructor(id){ this.id=id; this.spinsAlive=0; this.power=0; this.destroyed=false; this.tempZero=false; this.meta={}; }}
+class Protocol { constructor(def){ Object.assign(this, def);} }
+class Wave { constructor(index, spins){ this.index=index; this.spinsTotal=spins; this.spinsLeft=spins; }}
+class Town { constructor(index, req, spins){ this.index=index; this.requiredKills=req; this.spinsPerWave=spins; this.waves=5; this.waveIndex=1; this.kills=0; this.raidUsed=false; this.raidTriggers=0; this.pendingProtocolRewards=0; }}
+
+const TOWN_TABLE=[
+  [1,25,5],[2,50,5],[3,100,6],[4,150,6],[5,225,7],[6,300,7],[7,350,8],[8,425,8],[9,600,9],[10,650,9],[11,800,10],[12,1000,10]
+];
+const RARITY_W={Basic:70,Uncommon:20,Rare:7,'Very Rare':2,'Ultra Rare':1};
+
+const SYMBOL_DEFS={
+  rock:{name:'Rock',rarity:'Basic',cat:['rps']}, paper:{name:'Paper',rarity:'Basic',cat:['rps']}, scissors:{name:'Scissors',rarity:'Basic',cat:['rps']},
+  scrap:{name:'Scrap Metal',rarity:'Basic',cat:['scrap'],base:1}, large_scrap:{name:'Large Scrap Metal',rarity:'Uncommon',cat:['scrap'],base:3},
+  tinned_food:{name:'Tinned Food',rarity:'Basic',cat:['food'],base:0}, empty_tin:{name:'Empty Tin',rarity:'Basic',cat:['tin'],base:0},
+  campfire:{name:'Campfire',rarity:'Uncommon',cat:['camp'],base:0}, cooked_food:{name:'Cooked Food',rarity:'Uncommon',cat:['food'],base:3}, rotten_food:{name:'Rotten Food',rarity:'Uncommon',cat:['food'],base:0},
+  scavenger:{name:'Scavenger',rarity:'Uncommon',cat:['person'],base:1}, chef:{name:'Chef',rarity:'Uncommon',cat:['person'],base:1}, gunsmith:{name:'Gunsmith',rarity:'Rare',cat:['person'],base:0}, scout:{name:'Scout',rarity:'Uncommon',cat:['person'],base:1}, map:{name:'Map',rarity:'Uncommon',cat:['tool'],base:0},
+  dog:{name:'Dog',rarity:'Uncommon',cat:['animal'],base:1}, guard_dog:{name:'Guard Dog',rarity:'Rare',cat:['animal'],base:1},
+  rat:{name:'Rat',rarity:'Basic',cat:['animal'],base:1},
+  seed:{name:'Seed',rarity:'Basic',cat:['plant'],base:0}, sapling:{name:'Sapling',rarity:'Uncommon',cat:['plant'],base:1}, fruit_tree:{name:'Fruit Tree',rarity:'Rare',cat:['plant'],base:2}, fruit:{name:'Fruit',rarity:'Uncommon',cat:['food'],base:0}, rotten_fruit:{name:'Rotten Fruit',rarity:'Rare',cat:['food'],base:0},
+  sleeping_bag:{name:'Sleeping Bag',rarity:'Uncommon',cat:['camp'],base:1}, tent:{name:'Tent',rarity:'Uncommon',cat:['camp'],base:0},
+  rusty_knife:{name:'Rusty Knife',rarity:'Basic',cat:['weapon'],base:0}, crossbow:{name:'Crossbow',rarity:'Uncommon',cat:['weapon'],base:0}, handgun:{name:'Handgun',rarity:'Uncommon',cat:['weapon'],base:3}, shotgun:{name:'Shotgun',rarity:'Rare',cat:['weapon'],base:4}, machine_gun:{name:'Machine Gun',rarity:'Very Rare',cat:['weapon'],base:0},
+  bullet:{name:'Bullet',rarity:'Basic',cat:['ammo'],base:0}, arrow:{name:'Arrow',rarity:'Basic',cat:['ammo'],base:0}, gun_oil:{name:'Gun Oil',rarity:'Uncommon',cat:['tool'],base:1}, grenade:{name:'Grenade',rarity:'Rare',cat:['weapon'],base:5}, riot_shield:{name:'Riot Shield',rarity:'Rare',cat:['defense'],base:2},
+  infected:{name:'Infected Survivor',rarity:'Rare',cat:['infected'],base:0},
+};
+
+const PROTOCOL_DEFS={
+  arrow_recovery:{name:'Arrow Recovery',rarity:'Rare',desc:'Crossbow does not consume Arrow if adjacent Dog.'},
+  holster:{name:'Holster',rarity:'Uncommon',desc:'Handgun bullet destroy chance 25% -> 12.5%.'},
+  magazine:{name:'Magazine',rarity:'Rare',desc:'All guns x1.2 kills.'},
+  armoury:{name:'Armoury',rarity:'Very Rare',desc:'Gunsmith creates 2 Bullets per scrap.'},
+  lucky_crate:{name:'Lucky Crate',rarity:'Uncommon',desc:'+4% Rare and above spawn chance.'},
+  salvage_chain:{name:'Salvage Chain',rarity:'Rare',desc:'Scrap base +1 kill.'},
+  rationing:{name:'Rationing',rarity:'Uncommon',desc:'Food gives +1 kill.'},
+  watchdog:{name:'Watchdog Doctrine',rarity:'Very Rare',desc:'Dogs gain +1 and immune to Rotten Food zeroing.'}
+};
+
+class Game {
+  constructor(){ this.rng=new RNG(1337); this.init(); }
+  init(){
+    this.townIdx=0; this.protocols=[]; this.inventory=['scrap','tinned_food','rock','paper','scissors']; this.grid=[]; this.turn=0; this.gameOver=false; this.pendingSymbolDraft=false; this.pendingProtocolDraft=false;
+    this.currentTown=this.buildTown(); this.currentWave=new Wave(1,this.currentTown.spinsPerWave); this.raidState=null;
+    this.log('New run started with deterministic seed 1337.'); this.render();
+  }
+  buildTown(){ const [idx,req,sp]=TOWN_TABLE[Math.min(this.townIdx,TOWN_TABLE.length-1)]; return new Town(idx,req,sp); }
+  hasProtocol(id){ return this.protocols.some(p=>p.id===id); }
+  log(msg){ const el=document.getElementById('log'); el.innerHTML=`<div>${msg}</div>`+el.innerHTML; }
+  rarityWeight(r){ let w=RARITY_W[r]||1; if(this.hasProtocol('lucky_crate') && ['Rare','Very Rare','Ultra Rare'].includes(r)) w*=1.5; return w; }
+  weightedSymbol(onlyVeryRare=false){
+    const entries=Object.entries(SYMBOL_DEFS).filter(([_,d])=>onlyVeryRare?d.rarity==='Very Rare':true);
+    const total=entries.reduce((a,[,d])=>a+this.rarityWeight(d.rarity),0); let t=this.rng.next()*total;
+    for(const [id,d] of entries){ t-=this.rarityWeight(d.rarity); if(t<=0) return id; } return entries[0][0];
+  }
+  neighbors(i){ const x=i%5,y=Math.floor(i/5),out=[]; for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){ if(!dx&&!dy)continue; const nx=x+dx,ny=y+dy; if(nx>=0&&nx<5&&ny>=0&&ny<4) out.push(ny*5+nx);} return out; }
+  rollGrid(){ this.grid=[]; for(let i=0;i<20;i++){ const id=this.rng.pick(this.inventory); const s=new Symbol(id); this.grid.push(s);} }
+  edge(i){ const x=i%5,y=Math.floor(i/5); return x===0||x===4||y===0||y===3; }
+
+  spin(){
+    if(this.gameOver||this.pendingSymbolDraft||this.pendingProtocolDraft||this.raidState?.active) return;
+    if(this.currentWave.spinsLeft<=0) return;
+    this.turn++; this.rollGrid(); let kills=0; let globalGunMult=this.hasProtocol('magazine')?1.2:1; let gunOilCount=0;
+
+    const cells=this.grid;
+    const ids=(i)=>cells[i]?.id;
+    const hasAdj=(i,id)=>this.neighbors(i).some(n=>cells[n]&&!cells[n].destroyed&&cells[n].id===id);
+    const adj=(i,pred)=>this.neighbors(i).filter(n=>cells[n]&&!cells[n].destroyed&&pred(cells[n],n));
+
+    // Start pass: state progression
+    cells.forEach(c=>{ c.spinsAlive++; c.tempZero=false; if(c.id==='cooked_food'&&c.spinsAlive>5) c.id='rotten_food'; if(c.id==='seed'&&c.spinsAlive>=2) c.id='sapling'; if(c.id==='sapling'&&c.spinsAlive>=4) c.id='fruit_tree'; if(c.id==='rusty_knife') c.power = Math.max(0,5-(c.spinsAlive-1)); if(c.id==='tent'&&c.power===0)c.power=1; if(c.id==='machine_gun'&&c.power===0)c.power=2; if(c.id==='bullet'&&c.power===0)c.power=3; });
+
+    // Infected survivor local zeroing
+    cells.forEach((c,i)=>{ if(c.id==='infected'&&!c.destroyed) adj(i,s=>SYMBOL_DEFS[s.id].cat.includes('person')).forEach(n=>cells[n].tempZero=true); });
+
+    // Rotten food spread/effect
+    cells.forEach((c,i)=>{
+      if(c.id==='rotten_food'&&!c.destroyed){
+        adj(i,s=>SYMBOL_DEFS[s.id].cat.includes('food')&&s.id!=='rotten_food').forEach(n=>cells[n].id='rotten_food');
+        adj(i,s=>SYMBOL_DEFS[s.id].cat.includes('person')||SYMBOL_DEFS[s.id].cat.includes('animal')).forEach(n=>{ if(!this.hasProtocol('watchdog')||!SYMBOL_DEFS[cells[n].id].cat.includes('animal')) cells[n].tempZero=true; if(this.rng.chance(0.1) && cells[n].id!=='riot_shield') cells[n].destroyed=true; });
+        c.destroyed=true;
+      }
+    });
+
+    // Campfire
+    cells.forEach((c,i)=>{
+      if(c.id==='campfire'&&!c.destroyed){
+        adj(i,s=>SYMBOL_DEFS[s.id].cat.includes('plant')&&s.id!=='sleeping_bag').forEach(n=>{ kills+=5; cells[n].destroyed=true; });
+        adj(i,s=>s.id==='tinned_food').forEach(n=>{ cells[n].destroyed=true; c.destroyed=true; cells[n]=new Symbol('cooked_food'); cells[n].spinsAlive=0; });
+      }
+    });
+
+    // Rat clears rotten food
+    cells.forEach((c,i)=>{ if(c.id==='rat') adj(i,s=>s.id==='rotten_food').forEach(n=>cells[n].destroyed=true); });
+
+    // Empty tin -> scrap
+    cells.forEach((c,i)=>{ if(c.id==='empty_tin'&&!c.destroyed){ const tins=adj(i,s=>s.id==='empty_tin'); if(tins.length>=2){ c.id='scrap'; tins.slice(0,2).forEach(n=>cells[n].destroyed=true); } } });
+
+    // Scavenger, chef, tree creation
+    cells.forEach((c,i)=>{
+      if(c.destroyed) return;
+      if(c.id==='scavenger'){
+        let dogAdj=adj(i,s=>s.id==='dog'||s.id==='guard_dog').length; let sf=0.1*Math.pow(2,dogAdj), lf=0.02*Math.pow(2,dogAdj);
+        if(this.rng.chance(lf)) this.inventory.push('large_scrap'); else if(this.rng.chance(sf)) this.inventory.push('scrap');
+      }
+      if(c.id==='chef'){
+        if(this.rng.chance(0.5)) this.inventory.push('tinned_food');
+        const foodAdj=adj(i,s=>SYMBOL_DEFS[s.id].cat.includes('food')).length; for(let k=0;k<foodAdj;k++) this.inventory.push('tinned_food');
+      }
+      if(c.id==='fruit_tree'){ if(this.rng.chance(0.02)) this.inventory.push('rotten_fruit'); else if(this.rng.chance(0.15)) this.inventory.push('fruit'); }
+    });
+
+    // Gunsmith consumes scrap -> bullets + permanent
+    cells.forEach((c,i)=>{
+      if(c.id==='gunsmith'&&!c.destroyed){
+        const scraps=adj(i,s=>s.id==='scrap'||s.id==='large_scrap');
+        scraps.forEach(n=>{ c.power+=(cells[n].id==='large_scrap'?3:1)+(this.hasProtocol('salvage_chain')?1:0); cells[n].destroyed=true; this.inventory.push('bullet'); if(this.hasProtocol('armoury')) this.inventory.push('bullet'); });
+      }
+    });
+
+    // Scout+map raid trigger
+    if(!this.currentTown.raidUsed){ let trig=false; cells.forEach((c,i)=>{ if(c.id==='scout'&&hasAdj(i,'map')) trig=true; }); if(trig){ this.currentTown.raidTriggers++; if(this.currentTown.raidTriggers>=3){ this.openRaid(); return; } } }
+
+    // RPS cluster (connected component of rps containing all 3)
+    const seen=new Set();
+    for(let i=0;i<cells.length;i++){
+      if(seen.has(i)||!['rock','paper','scissors'].includes(ids(i))) continue;
+      const q=[i], comp=[]; seen.add(i);
+      while(q.length){ const c=q.pop(); comp.push(c); this.neighbors(c).forEach(n=>{ if(!seen.has(n)&&['rock','paper','scissors'].includes(ids(n))){ seen.add(n); q.push(n);} }); }
+      const set=new Set(comp.map(n=>ids(n))); if(set.has('rock')&&set.has('paper')&&set.has('scissors')){ ['rock','paper','scissors'].forEach(type=>{ const idx=comp.find(n=>ids(n)===type&&!cells[n].destroyed); if(idx!=null) cells[idx].destroyed=true; }); kills+=10; this.currentTown.pendingProtocolRewards++; this.log('RPS cluster triggered: +10 kills and +1 bonus protocol draft token.'); }
+    }
+
+    // Weapon and special interactions + base kills
+    cells.forEach((c,i)=>{
+      if(c.destroyed) return;
+      const def=SYMBOL_DEFS[c.id]; let k=(def.base||0)+c.power;
+      if(c.id==='scrap'&&this.hasProtocol('salvage_chain')) k+=1;
+      if(c.id==='dog'||c.id==='guard_dog'){ if(c.id==='guard_dog'&&this.edge(i)) k*=2; if(this.hasProtocol('watchdog')) k+=1; }
+      if(c.id==='chef'){ k+=adj(i,s=>SYMBOL_DEFS[s.id].cat.includes('food')).length; }
+      if(c.id==='cooked_food'){ adj(i,s=>SYMBOL_DEFS[s.id].cat.includes('person')).forEach(n=>{ cells[n].meta.buff=(cells[n].meta.buff||1)*2; }); }
+      if(c.id==='crossbow'){ const arrows=adj(i,s=>s.id==='arrow'); if(arrows.length){ k+=3; arrows.forEach(n=>{ let consume=true; if(this.hasProtocol('arrow_recovery')&&hasAdj(i,'dog')) consume=false; if(consume&&this.rng.chance(0.3)) cells[n].destroyed=true; }); } }
+      if(c.id==='handgun'){ const bullets=adj(i,s=>s.id==='bullet'); bullets.forEach(n=>{ k+=cells[n].power||3; cells[n].destroyed=true; if(this.rng.chance(this.hasProtocol('holster')?0.125:0.25)) c.id='scrap'; }); }
+      if(c.id==='shotgun'){ const bullets=adj(i,s=>s.id==='bullet'); k+=2*bullets.length; bullets.forEach(n=>cells[n].destroyed=true); if(this.rng.chance(0.15)) c.id='scrap'; }
+      if(c.id==='machine_gun'){ const bullets=adj(i,s=>s.id==='bullet'); k+=2*bullets.length; bullets.forEach(n=>{ cells[n].destroyed=true; cells.forEach(m=>{ if(m.id==='machine_gun') m.power=Math.max(2,(m.power||2)*1.1); }); }); if(this.rng.chance(0.3)) c.id='scrap'; }
+      if(c.id==='grenade'){ const neigh=this.neighbors(i).filter(n=>!cells[n].destroyed); for(let t=0;t<Math.min(2,neigh.length);t++){ const n=neigh.splice(this.rng.int(neigh.length),1)[0]; if(cells[n].id!=='riot_shield'){ kills+=(SYMBOL_DEFS[cells[n].id].base||0)+(cells[n].power||0); cells[n].destroyed=true; } } c.destroyed=true; }
+      if(c.id==='gun_oil') gunOilCount++;
+      if(c.id==='rotten_fruit'){ const victim=adj(i,s=>SYMBOL_DEFS[s.id].cat.includes('person')||SYMBOL_DEFS[s.id].cat.includes('animal'))[0]; if(victim!=null&&cells[victim].id!=='riot_shield'){ cells[victim].destroyed=true; c.destroyed=true; } }
+      if(c.id==='tent'){ if(hasAdj(i,'sleeping_bag')){ c.power+=1; const sb=adj(i,s=>s.id==='sleeping_bag')[0]; if(sb!=null) cells[sb].destroyed=true; } if(hasAdj(i,'campfire')) k*=3; }
+      if(c.id==='tinned_food'){ const consumer=adj(i,s=>SYMBOL_DEFS[s.id].cat.includes('person')||SYMBOL_DEFS[s.id].cat.includes('animal'))[0]; if(consumer!=null){ c.id='empty_tin'; }}
+      if(c.id==='riot_shield'){}
+      if(c.tempZero) k=0;
+      if(c.meta.buff) k*=c.meta.buff;
+      if(this.hasProtocol('rationing')&&SYMBOL_DEFS[c.id].cat.includes('food')) k+=1;
+      if(SYMBOL_DEFS[c.id].cat.includes('weapon')) k*=globalGunMult;
+      kills+=Math.floor(k);
+    });
+
+    // cleanup destroyed -> chance to become scrap for destroyed guns
+    cells.forEach(c=>{ if(c.destroyed) c.id='empty_tin'; });
+    this.currentTown.kills+=kills;
+    this.currentWave.spinsLeft--;
+    this.log(`Spin ${this.turn}: +${kills} kills (Town total ${this.currentTown.kills}/${this.currentTown.requiredKills}).`);
+
+    if(this.currentTown.kills>=this.currentTown.requiredKills){
+      this.townClear(); return;
+    }
+    if(this.currentWave.spinsLeft===0){ this.endWave(); return; }
+    this.render();
+  }
+
+  openRaid(){
+    this.currentTown.raidUsed=true;
+    this.raidState={active:true,spins:5,target:Math.max(40,this.currentTown.index*30),kills:0};
+    document.getElementById('raidText').textContent=`Massive zombie wave: score ${this.raidState.target} kills in 5 raid spins or lose.`;
+    document.getElementById('raidModal').classList.add('show');
+  }
+  doRaid(){
+    document.getElementById('raidModal').classList.remove('show');
+    for(let i=0;i<5;i++){ this.rollGrid(); let k=0; this.grid.forEach(c=>{ k+=(SYMBOL_DEFS[c.id].base||0)+c.power; if(SYMBOL_DEFS[c.id].cat.includes('weapon')) k+=1;}); this.raidState.kills+=Math.floor(k*1.5); }
+    if(this.raidState.kills>=this.raidState.target){ this.log(`Raid won (${this.raidState.kills}/${this.raidState.target})! Draft very rare rewards.`); this.raidState.active=false; this.openDraft('symbol',true); this.openDraft('protocol',true); }
+    else { this.gameOver=true; this.log(`Raid lost (${this.raidState.kills}/${this.raidState.target}). Game Over.`); }
+    this.render();
+  }
+
+  endWave(){
+    if(this.currentTown.waveIndex>=this.currentTown.waves){ this.endTown(); return; }
+    this.currentTown.waveIndex++; this.currentWave=new Wave(this.currentTown.waveIndex,this.currentTown.spinsPerWave);
+    this.openDraft('symbol');
+  }
+  endTown(){
+    if(this.currentTown.kills<this.currentTown.requiredKills){ this.gameOver=true; this.log('Spins exhausted before target reached. Game Over.'); this.render(); return; }
+    this.openDraft('protocol');
+  }
+  townClear(){
+    this.log(`✅ Town ${this.currentTown.index} cleared!`);
+    this.openDraft('protocol');
+  }
+
+  openDraft(type,veryRare=false){
+    const modal=document.getElementById('draftModal'); const choicesEl=document.getElementById('draftChoices'); choicesEl.innerHTML='';
+    this.pendingSymbolDraft=type==='symbol'; this.pendingProtocolDraft=type==='protocol';
+    document.getElementById('draftTitle').textContent=type==='symbol'?'Choose a new Symbol':'Choose a Protocol';
+    document.getElementById('draftSub').textContent=veryRare?'Very Rare reward from Raid!':(type==='symbol'?'End of Wave reward':'Town clear reward');
+    const opts=[];
+    for(let i=0;i<3;i++) opts.push(type==='symbol'?this.weightedSymbol(veryRare):this.weightedProtocol(veryRare));
+    opts.forEach(id=>{
+      const d=type==='symbol'?SYMBOL_DEFS[id]:PROTOCOL_DEFS[id];
+      const card=document.createElement('div'); card.className='card';
+      card.innerHTML=`<div><b>${d.name}</b></div><div class='small'>${d.rarity}</div><div class='small'>${d.desc||''}</div><button>Pick</button>`;
+      card.querySelector('button').onclick=()=>{ if(type==='symbol') this.inventory.push(id); else this.protocols.push(new Protocol({id,...PROTOCOL_DEFS[id]})); modal.classList.remove('show'); this.pendingSymbolDraft=false; this.pendingProtocolDraft=false; this.afterDraft(); };
+      choicesEl.appendChild(card);
+    });
+    modal.classList.add('show');
+  }
+  weightedProtocol(veryRare=false){
+    const entries=Object.entries(PROTOCOL_DEFS).filter(([id,d])=>veryRare?d.rarity==='Very Rare':true).filter(([id])=>!this.hasProtocol(id));
+    if(!entries.length) return 'lucky_crate';
+    const map={Basic:70,Uncommon:20,Rare:8,'Very Rare':2}; const total=entries.reduce((a,[,d])=>a+(map[d.rarity]||1),0); let t=this.rng.next()*total;
+    for(const [id,d] of entries){ t-=(map[d.rarity]||1); if(t<=0) return id; } return entries[0][0];
+  }
+  afterDraft(){
+    if(this.currentTown.pendingProtocolRewards>0){ this.currentTown.pendingProtocolRewards--; this.openDraft('protocol'); return; }
+    if(this.currentTown.kills>=this.currentTown.requiredKills){ this.townIdx++; if(this.townIdx>=TOWN_TABLE.length){ this.log('🏆 Sanctuary reached! Endless Mode started.'); this.townIdx=TOWN_TABLE.length-1; this.currentTown=this.buildTown(); this.currentTown.requiredKills=Math.floor(this.currentTown.requiredKills*1.25); }
+      else this.currentTown=this.buildTown();
+      this.currentWave=new Wave(1,this.currentTown.spinsPerWave); this.render(); return;
+    }
+    if(this.currentWave.spinsLeft===0){ this.render(); return; }
+    this.render();
+  }
+
+  render(){
+    const s=document.getElementById('stats');
+    s.innerHTML=`
+      <div class='stat'>Town: <b>${this.currentTown.index}</b></div>
+      <div class='stat'>Wave: <b>${this.currentTown.waveIndex}/5</b></div>
+      <div class='stat'>Spins Left: <b>${this.currentWave.spinsLeft}</b></div>
+      <div class='stat'>Kills: <b>${Math.floor(this.currentTown.kills)}</b></div>
+      <div class='stat'>Required: <b>${this.currentTown.requiredKills}</b></div>
+      <div class='stat'>Raid Trigger: <b>${this.currentTown.raidTriggers}/3</b></div>`;
+    const grid=document.getElementById('grid'); grid.innerHTML='';
+    this.grid.forEach((c,idx)=>{ const d=SYMBOL_DEFS[c.id]||{name:c.id,rarity:'-'}; const el=document.createElement('div'); el.className='cell'; el.innerHTML=`<div class='name'>${d.name}</div><div class='meta'>${d.rarity}</div><div class='kills'>Pwr ${(c.power||0).toFixed(1)}</div>`; grid.appendChild(el); });
+    while(grid.children.length<20){ const e=document.createElement('div'); e.className='cell'; e.innerHTML='<div class="meta">(spin to roll)</div>'; grid.appendChild(e); }
+
+    const invCount={}; this.inventory.forEach(i=>invCount[i]=(invCount[i]||0)+1);
+    document.getElementById('inventory').innerHTML=Object.entries(invCount).sort((a,b)=>b[1]-a[1]).slice(0,20).map(([id,n])=>`<span class='chip'>${SYMBOL_DEFS[id]?.name||id}: ${n}</span>`).join('')||'<span class="small">None</span>';
+    document.getElementById('protocols').innerHTML=this.protocols.map(p=>`<span class='chip'>${p.name}</span>`).join('')||'<span class="small">No protocols yet</span>';
+
+    document.getElementById('spinBtn').disabled=this.gameOver||this.pendingProtocolDraft||this.pendingSymbolDraft||this.raidState?.active;
+    if(this.gameOver) this.log('<span class="danger">Run ended. Press New Run.</span>');
+  }
+}
+
+const game=new Game();
+document.getElementById('spinBtn').onclick=()=>game.spin();
+document.getElementById('resetBtn').onclick=()=>{ document.getElementById('log').innerHTML=''; game.init(); };
+document.getElementById('raidStartBtn').onclick=()=>game.doRaid();
+</script>
+</body>
+</html>
